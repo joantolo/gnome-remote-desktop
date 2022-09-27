@@ -351,6 +351,18 @@ grd_session_rdp_maybe_encode_pending_frame (GrdSessionRdp *session_rdp,
   rdp_peer_refresh_region (session_rdp, rdp_surface, buffer);
 }
 
+void
+grd_session_rdp_send_server_redirection (GrdSessionRdp *session_rdp,
+                                         const char    *routing_token,
+                                         const char    *user_name,
+                                         const char    *password)
+{
+  freerdp_peer *peer = session_rdp->peer;
+
+  peer->SendServerRedirection (peer, 0, NULL, routing_token, user_name, NULL,
+                               password, NULL, NULL, 0, NULL, 0, NULL);
+}
+
 static void
 maybe_queue_close_session_idle (GrdSessionRdp *session_rdp)
 {
