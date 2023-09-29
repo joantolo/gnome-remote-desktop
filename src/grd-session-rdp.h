@@ -86,6 +86,8 @@ void grd_session_rdp_maybe_encode_pending_frame (GrdSessionRdp *session_rdp,
 void grd_session_rdp_send_server_redirection (GrdSessionRdp *session_rdp,
                                               const char    *routing_token,
                                               const char    *user_name,
-                                              const char    *password);
+                                              const char    *password,
+                                              const uint8_t *der_certificate,
+                                              const size_t   der_certificate_len);
 
 #endif /* GRD_SESSION_RDP_H */

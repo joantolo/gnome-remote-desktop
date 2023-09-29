@@ -24,6 +24,7 @@
 
 #include "grd-daemon-system.h"
 
+#include <freerdp/crypto/crypto.h>
 #include <gio/gunixfdlist.h>
 #include <systemd/sd-login.h>
 
@@ -201,6 +202,9 @@ on_handle_start_handover (GrdDBusRemoteDesktopRdpHandover *interface,
   g_autofree char *certificate = NULL;
   g_autofree char *routing_token = NULL;
   g_autoptr (GVariant) redirect_variant = NULL;
+  g_autofree uint8_t *der_certificate = NULL;
+  rdpCertificate *rdp_certificate;
+  size_t der_certificate_len;
   GDBusConnection *connection;
   const char *sender;
 
@@ -222,13 +226,22 @@ on_handle_start_handover (GrdDBusRemoteDesktopRdpHandover *interface,
 
   routing_token = get_routing_token_from_id (remote_client->id);
 
+  g_object_get (G_OBJECT (settings),
+                "rdp-server-cert", &certificate,
+                "rdp-server-key", &key,
+                NULL);
+
   /* The remote client is at daemon-system */
   if (remote_client->session)
     {
+      rdp_certificate = freerdp_certificate_new_from_pem (certificate);
+      der_certificate = freerdp_certificate_get_der (rdp_certificate,
+                                                     &der_certificate_len);
       grd_session_rdp_send_server_redirection (
         GRD_SESSION_RDP (remote_client->session),
         routing_token,
-        user_name, password);
+        user_name, password,
+        der_certificate, der_certificate_len);
     }
   else
     {
@@ -250,11 +263,6 @@ on_handle_start_handover (GrdDBusRemoteDesktopRdpHandover *interface,
 
   sender = g_dbus_method_invocation_get_sender (invocation);
   remote_client->handover_dst->sender_name = g_strdup (sender);
-
-  g_object_get (G_OBJECT (settings),
-                "rdp-server-cert", &certificate,
-                "rdp-server-key", &key,
-                NULL);
 
   grd_dbus_remote_desktop_rdp_handover_complete_start_handover (
     remote_client->handover_dst->interface,

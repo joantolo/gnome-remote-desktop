@@ -22,8 +22,10 @@
 
 #include "config.h"
 
+#include "freerdp/crypto/certificate.h"
 #include "grd-daemon-handover.h"
 
+#include <freerdp/crypto/crypto.h>
 #include <gio/gunixfdlist.h>
 #include <systemd/sd-login.h>
 #include <unistd.h>
@@ -302,6 +304,21 @@ on_redirect_client (GrdDBusRemoteDesktopRdpHandover *interface,
   const char *object_path = g_dbus_proxy_get_object_path (
                               G_DBUS_PROXY (interface));
 
+  GrdContext *context = grd_daemon_get_context (GRD_DAEMON (daemon_handover));
+  GrdSettings *settings = grd_context_get_settings (context);
+  g_autofree char *certificate = NULL;
+  g_autofree uint8_t *der_certificate = NULL;
+  rdpCertificate *rdp_certificate;
+  size_t der_certificate_len;
+
+  g_object_get (G_OBJECT (settings),
+                "rdp-server-cert", &certificate,
+                NULL);
+
+  rdp_certificate = freerdp_certificate_new_from_pem (certificate);
+  der_certificate = freerdp_certificate_get_der (rdp_certificate,
+                                                 &der_certificate_len);
+
   g_debug ("[DaemonHandover] At: %s, received RedirectClient signal",
            object_path);
 
@@ -309,7 +326,9 @@ on_redirect_client (GrdDBusRemoteDesktopRdpHandover *interface,
     GRD_SESSION_RDP (daemon_handover->session),
     routing_token,
     user_name,
-    password);
+    password,
+    der_certificate,
+    der_certificate_len);
 }
 
 static void
