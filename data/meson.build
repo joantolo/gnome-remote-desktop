@@ -18,12 +18,15 @@ if have_rdp
                  },
                  install_dir: dbus_sys_dir)
 
-  configure_file(input: 'org.gnome.RemoteDesktop.Handover.desktop.in',
-                 output: 'org.gnome.RemoteDesktop.Handover.desktop',
-                 configuration: {
-                   'libexecdir': libexecdir,
-                 },
-                 install_dir: desktopdir)
+  handover_desktop_file = configure_file(input: 'org.gnome.RemoteDesktop.Handover.desktop.in',
+                                         output: 'org.gnome.RemoteDesktop.Handover.desktop',
+                                         configuration: {
+                                           'libexecdir': libexecdir,
+                                         })
+  install_data(handover_desktop_file,
+               install_dir: desktopdir)
+  install_data(handover_desktop_file,
+               install_dir: join_paths(datadir, 'gdm', 'greeter', 'autostart'))
 endif
 
 if get_option('systemd')
@@ -58,6 +61,15 @@ if get_option('systemd')
                      'libexecdir': libexecdir,
                    },
                    install_dir: userunitdir)
+
+    install_data('org.gnome.RemoteDesktop.Handover.target',
+      install_dir: userunitdir,
+    )
+
+    install_symlink('org.gnome.RemoteDesktop.Handover.target',
+      pointing_to: '../org.gnome.RemoteDesktop.Handover.target',
+      install_dir: join_paths(userunitdir, 'gnome-session.target.wants')
+    )
   endif
 endif
 
