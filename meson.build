@@ -76,6 +76,14 @@ schemadir = join_paths(datadir, 'glib-2.0', 'schemas')
 
 grd_datadir = join_paths(datadir, 'gnome-remote-desktop')
 
+grd_conf_dir = get_option('system_grd_conf_dir')
+if grd_conf_dir == ''
+  grd_conf_dir = join_paths(get_option('sysconfdir'), 'gnome-remote-desktop')
+endif
+grd_conf = join_paths(grd_conf_dir, 'grd.conf')
+
+grd_username = get_option('user')
+
 cdata = configuration_data()
 cdata.set_quoted('GETTEXT_PACKAGE', 'gnome-remote-desktop')
 cdata.set_quoted('VERSION', meson.project_version())
@@ -85,6 +93,7 @@ cdata.set('HAVE_VNC', have_vnc)
 cdata.set('HAVE_FDK_AAC', have_fdk_aac)
 
 cdata.set_quoted('GRD_DATA_DIR', grd_datadir)
+cdata.set_quoted('GRD_CONF', grd_conf)
 
 configure_file(input: 'config.h.meson',
                output: 'config.h',
