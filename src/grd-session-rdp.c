@@ -19,6 +19,7 @@
 
 #include "config.h"
 
+#include "freerdp/settings_keys.h"
 #include "grd-session-rdp.h"
 
 #include <freerdp/channels/drdynvc.h>
@@ -2016,6 +2017,13 @@ init_rdp_session (GrdSessionRdp  *session_rdp,
   freerdp_settings_set_bool (rdp_settings, FreeRDP_RdpSecurity, FALSE);
   freerdp_settings_set_bool (rdp_settings, FreeRDP_TlsSecurity, FALSE);
   freerdp_settings_set_bool (rdp_settings, FreeRDP_NlaSecurity, TRUE);
+
+  if (grd_context_get_runtime_mode (context) == GRD_RUNTIME_MODE_HANDOVER)
+    {
+      freerdp_settings_set_bool (rdp_settings, FreeRDP_RdstlsSecurity, TRUE);
+      freerdp_settings_set_string(rdp_settings, FreeRDP_Username, username);
+      freerdp_settings_set_string(rdp_settings, FreeRDP_Password, password);
+    }
 
   freerdp_settings_set_uint32 (rdp_settings, FreeRDP_OsMajorType,
                                OSMAJORTYPE_UNIX);
