@@ -41,19 +41,14 @@
 
 typedef enum
 {
-  NEGOTIATION_STATE_AWAIT_VERSION,
-  NEGOTIATION_STATE_AWAIT_INCOMING_DATA,
-  NEGOTIATION_STATE_AWAIT_FORMATS,
-  NEGOTIATION_STATE_AWAIT_FORMAT_CHANGE,
-  NEGOTIATION_STATE_AWAIT_OPEN_REPLY,
-  NEGOTIATION_STATE_COMPLETE,
-} NegotiationState;
-
-typedef enum
-{
-  RT_STATE_AWAIT_INCOMING_DATA,
-  RT_STATE_AWAIT_DATA,
-} RuntimeState;
+  AI_STATE_INIT,
+  AI_STATE_AWAIT_VERSION,
+  AI_STATE_AWAIT_SOUND_FORMATS,
+  AI_STATE_AWAIT_FORMAT_CHANGE,
+  AI_STATE_AWAIT_OPEN_REPLY,
+  AI_STATE_AWAIT_INCOMING_DATA,
+  AI_STATE_AWAIT_DATA,
+} AudioInputState;
 
 typedef struct
 {
@@ -85,8 +80,8 @@ struct _GrdRdpAudioInput
   GSource *channel_teardown_source;
   GSource *protocol_timeout_source;
 
-  NegotiationState negotiation_state;
-  RuntimeState runtime_state;
+  AudioInputState state;
+  gboolean on_initialization_sequence;
 
   int64_t incoming_data_time_us;
 
@@ -143,6 +138,30 @@ initiate_channel_teardown (gpointer user_data)
   return G_SOURCE_REMOVE;
 }
 
+static const char *
+audio_input_state_to_string (AudioInputState state)
+{
+  switch (state)
+    {
+    case AI_STATE_INIT:
+      return "INIT";
+    case AI_STATE_AWAIT_VERSION:
+      return "AWAIT_VERSION";
+    case AI_STATE_AWAIT_SOUND_FORMATS:
+      return "AWAIT_SOUND_FORMATS";
+    case AI_STATE_AWAIT_FORMAT_CHANGE:
+      return "AWAIT_FORMAT_CHANGE";
+    case AI_STATE_AWAIT_OPEN_REPLY:
+      return "AWAIT_OPEN_REPLY";
+    case AI_STATE_AWAIT_INCOMING_DATA:
+      return "AWAIT_INCOMING_DATA";
+    case AI_STATE_AWAIT_DATA:
+      return "AWAIT_DATA";
+    }
+
+  g_assert_not_reached ();
+}
+
 void
 grd_rdp_audio_input_maybe_init (GrdRdpAudioInput *audio_input)
 {
@@ -168,6 +187,8 @@ grd_rdp_audio_input_maybe_init (GrdRdpAudioInput *audio_input)
       return;
     }
   audio_input->channel_opened = TRUE;
+
+  audio_input->state = AI_STATE_AWAIT_VERSION;
 
   g_assert (!audio_input->protocol_timeout_source);
 
@@ -211,28 +232,6 @@ audin_channel_id_assigned (audin_server_context *audin_context,
   return TRUE;
 }
 
-static const char *
-negotiation_state_to_string (NegotiationState state)
-{
-  switch (state)
-    {
-    case NEGOTIATION_STATE_AWAIT_VERSION:
-      return "AWAIT_VERSION";
-    case NEGOTIATION_STATE_AWAIT_INCOMING_DATA:
-      return "AWAIT_INCOMING_DATA";
-    case NEGOTIATION_STATE_AWAIT_FORMATS:
-      return "AWAIT_FORMATS";
-    case NEGOTIATION_STATE_AWAIT_FORMAT_CHANGE:
-      return "AWAIT_FORMAT_CHANGE";
-    case NEGOTIATION_STATE_AWAIT_OPEN_REPLY:
-      return "AWAIT_OPEN_REPLY";
-    case NEGOTIATION_STATE_COMPLETE:
-      return "COMPLETE";
-    }
-
-  g_assert_not_reached ();
-}
-
 static const AUDIO_FORMAT audio_format_alaw =
 {
   .wFormatTag = WAVE_FORMAT_ALAW,
@@ -268,11 +267,11 @@ audin_receive_version (audin_server_context *audin_context,
   GrdRdpAudioInput *audio_input = audin_context->userdata;
   SNDIN_FORMATS formats = {};
 
-  if (audio_input->negotiation_state != NEGOTIATION_STATE_AWAIT_VERSION)
+  if (audio_input->state != AI_STATE_AWAIT_VERSION)
     {
       g_warning ("[RDP.AUDIO_INPUT] Protocol violation: Received stray Version "
                  "PDU (Negotiation state: %s). Terminating protocol",
-                 negotiation_state_to_string (audio_input->negotiation_state));
+                 audio_input_state_to_string (audio_input->state));
       g_source_set_ready_time (audio_input->channel_teardown_source, 0);
 
       return CHANNEL_RC_INITIALIZATION_ERROR;
@@ -289,7 +288,7 @@ audin_receive_version (audin_server_context *audin_context,
 
   g_debug ("[RDP.AUDIO_INPUT] Client supports version %u", version->Version);
 
-  audio_input->negotiation_state = NEGOTIATION_STATE_AWAIT_INCOMING_DATA;
+  audio_input->state = AI_STATE_AWAIT_INCOMING_DATA;
 
   formats.NumFormats = G_N_ELEMENTS (server_formats);
   formats.SoundFormats = server_formats;
@@ -361,11 +360,11 @@ audin_receive_formats (audin_server_context *audin_context,
 
   current_time_us = g_get_monotonic_time ();
 
-  if (audio_input->negotiation_state != NEGOTIATION_STATE_AWAIT_FORMATS)
+  if (audio_input->state != AI_STATE_AWAIT_SOUND_FORMATS)
     {
       g_warning ("[RDP.AUDIO_INPUT] Protocol violation: Received stray Sound "
                  "Formats PDU (Negotiation state: %s). Terminating protocol",
-                 negotiation_state_to_string (audio_input->negotiation_state));
+                 audio_input_state_to_string (audio_input->state));
       g_source_set_ready_time (audio_input->channel_teardown_source, 0);
 
       return CHANNEL_RC_INITIALIZATION_ERROR;
@@ -411,7 +410,7 @@ audin_receive_formats (audin_server_context *audin_context,
            byte_count * 1000 / MAX (time_delta_us, 1),
            formats->cbSizeFormatsPacket, formats->ExtraDataSize);
 
-  audio_input->negotiation_state = NEGOTIATION_STATE_AWAIT_FORMAT_CHANGE;
+  audio_input->state = AI_STATE_AWAIT_FORMAT_CHANGE;
 
   waveformat_extensible.Samples.wValidBitsPerSample = N_BYTES_PER_SAMPLE_PCM * 8;
   waveformat_extensible.dwChannelMask = SPEAKER_FRONT_LEFT |
@@ -438,11 +437,11 @@ audin_open_reply (audin_server_context   *audin_context,
   GrdRdpAudioInput *audio_input = audin_context->userdata;
   int32_t signed_result = open_reply->Result;
 
-  if (audio_input->negotiation_state != NEGOTIATION_STATE_AWAIT_OPEN_REPLY)
+  if (audio_input->state != AI_STATE_AWAIT_OPEN_REPLY)
     {
       g_warning ("[RDP.AUDIO_INPUT] Protocol violation: Received stray Open "
                  "Reply PDU (Negotiation state: %s). Terminating protocol",
-                 negotiation_state_to_string (audio_input->negotiation_state));
+                 audio_input_state_to_string (audio_input->state));
       g_source_set_ready_time (audio_input->channel_teardown_source, 0);
 
       return CHANNEL_RC_INITIALIZATION_ERROR;
@@ -468,8 +467,8 @@ audin_open_reply (audin_server_context   *audin_context,
   g_debug ("[RDP.AUDIO_INPUT] Received Open Reply PDU, HRESULT: %i",
            signed_result);
 
-  audio_input->negotiation_state = NEGOTIATION_STATE_COMPLETE;
-  audio_input->runtime_state = RT_STATE_AWAIT_INCOMING_DATA;
+  audio_input->state = AI_STATE_AWAIT_INCOMING_DATA;
+  audio_input->on_initialization_sequence = FALSE;
 
   return CHANNEL_RC_OK;
 }
@@ -482,44 +481,25 @@ audin_incoming_data (audin_server_context      *audin_context,
 
   audio_input->incoming_data_time_us = g_get_monotonic_time ();
 
-  if (audio_input->negotiation_state < NEGOTIATION_STATE_COMPLETE &&
-      audio_input->negotiation_state != NEGOTIATION_STATE_AWAIT_INCOMING_DATA)
+  if (audio_input->state != AI_STATE_AWAIT_INCOMING_DATA)
     {
-      g_warning ("[RDP.AUDIO_INPUT] Protocol violation: Received stray "
-                 "Incoming Data PDU (Negotiation state: %s)",
-                 negotiation_state_to_string (audio_input->negotiation_state));
+      if (audio_input->on_initialization_sequence)
+        g_warning ("[RDP.AUDIO_INPUT] Protocol violation: Received stray "
+                   "Incoming Data PDU (Negotiation state: %s)",
+                   audio_input_state_to_string (audio_input->state));
+      else
+        g_warning ("[RDP.AUDIO_INPUT] Protocol violation: Received duplicated "
+                   "Incoming Data PDU");
+
       return CHANNEL_RC_OK;
     }
 
-  if (audio_input->negotiation_state == NEGOTIATION_STATE_COMPLETE &&
-      audio_input->runtime_state != RT_STATE_AWAIT_INCOMING_DATA)
-    {
-      g_warning ("[RDP.AUDIO_INPUT] Protocol violation: Received duplicated "
-                 "Incoming Data PDU");
-    }
-
-  if (audio_input->negotiation_state == NEGOTIATION_STATE_AWAIT_INCOMING_DATA)
-    audio_input->negotiation_state = NEGOTIATION_STATE_AWAIT_FORMATS;
-  else if (audio_input->negotiation_state == NEGOTIATION_STATE_COMPLETE)
-    audio_input->runtime_state = RT_STATE_AWAIT_DATA;
+  if (audio_input->on_initialization_sequence)
+    audio_input->state = AI_STATE_AWAIT_SOUND_FORMATS;
   else
-    g_assert_not_reached ();
+    audio_input->state = AI_STATE_AWAIT_DATA;
 
   return CHANNEL_RC_OK;
-}
-
-static const char *
-runtime_state_to_string (RuntimeState state)
-{
-  switch (state)
-    {
-    case RT_STATE_AWAIT_INCOMING_DATA:
-      return "AWAIT_INCOMING_DATA";
-    case RT_STATE_AWAIT_DATA:
-      return "AWAIT_DATA";
-    }
-
-  g_assert_not_reached ();
 }
 
 static uint32_t
@@ -533,20 +513,17 @@ audin_data (audin_server_context *audin_context,
   uint8_t *src_data;
   uint32_t src_size;
 
-  if (audio_input->negotiation_state < NEGOTIATION_STATE_COMPLETE ||
-      audio_input->runtime_state != RT_STATE_AWAIT_DATA)
+  if (audio_input->state != AI_STATE_AWAIT_DATA)
     {
       g_warning ("[RDP.AUDIO_INPUT] Protocol violation: Received stray Data "
-                 "PDU (Negotiation state: %s, Runtime state: %s). "
-                 "Terminating protocol",
-                 negotiation_state_to_string (audio_input->negotiation_state),
-                 runtime_state_to_string (audio_input->runtime_state));
+                 "PDU (Negotiation state: %s). Terminating protocol",
+                 audio_input_state_to_string (audio_input->state));
       g_source_set_ready_time (audio_input->channel_teardown_source, 0);
 
       return CHANNEL_RC_UNSUPPORTED_VERSION;
     }
 
-  audio_input->runtime_state = RT_STATE_AWAIT_INCOMING_DATA;
+  audio_input->state = AI_STATE_AWAIT_INCOMING_DATA;
 
   src_data = Stream_Pointer (data->Data);
   src_size = Stream_Length (data->Data);
@@ -589,22 +566,22 @@ audin_receive_format_change (audin_server_context     *audin_context,
 {
   GrdRdpAudioInput *audio_input = audin_context->userdata;
 
-  if (audio_input->negotiation_state < NEGOTIATION_STATE_COMPLETE &&
-      audio_input->negotiation_state != NEGOTIATION_STATE_AWAIT_FORMAT_CHANGE)
+  if (audio_input->on_initialization_sequence &&
+      audio_input->state != AI_STATE_AWAIT_FORMAT_CHANGE)
     {
       g_warning ("[RDP.AUDIO_INPUT] Protocol violation: Received stray Format "
                  "Change PDU (Negotiation state: %s). Terminating protocol",
-                 negotiation_state_to_string (audio_input->negotiation_state));
+                 audio_input_state_to_string (audio_input->state));
       g_source_set_ready_time (audio_input->channel_teardown_source, 0);
 
       return CHANNEL_RC_INITIALIZATION_ERROR;
     }
 
-  if (audio_input->negotiation_state == NEGOTIATION_STATE_COMPLETE)
+  if (!audio_input->on_initialization_sequence)
     {
       g_warning ("[RDP.AUDIO_INPUT] Protocol violation: Received stray Format "
                  "Change PDU (Runtime state: %s). Terminating protocol",
-                 runtime_state_to_string (audio_input->runtime_state));
+                 audio_input_state_to_string (audio_input->state));
       g_source_set_ready_time (audio_input->channel_teardown_source, 0);
 
       return CHANNEL_RC_UNSUPPORTED_VERSION;
@@ -632,10 +609,8 @@ audin_receive_format_change (audin_server_context     *audin_context,
            format_change->NewFormat,
            grd_rdp_dsp_codec_to_string (audio_input->codec));
 
-  if (audio_input->negotiation_state < NEGOTIATION_STATE_COMPLETE)
-    audio_input->negotiation_state = NEGOTIATION_STATE_AWAIT_OPEN_REPLY;
-  else
-    audio_input->runtime_state = RT_STATE_AWAIT_INCOMING_DATA;
+  if (audio_input->on_initialization_sequence)
+    audio_input->state = AI_STATE_AWAIT_OPEN_REPLY;
 
   return CHANNEL_RC_OK;
 }
@@ -731,8 +706,8 @@ ensure_dvc_is_closed (GrdRdpAudioInput *audio_input)
   g_queue_clear_full (audio_input->pending_frames, audio_data_free);
   g_mutex_unlock (&audio_input->pending_frames_mutex);
 
-  audio_input->negotiation_state = NEGOTIATION_STATE_AWAIT_VERSION;
-  audio_input->runtime_state = RT_STATE_AWAIT_INCOMING_DATA;
+  audio_input->on_initialization_sequence = TRUE;
+  audio_input->state = AI_STATE_INIT;
 
   audio_input->requested_format_idx = -1;
   audio_input->alaw_client_format_idx = -1;
@@ -1117,8 +1092,8 @@ grd_rdp_audio_input_init (GrdRdpAudioInput *audio_input)
   GSource *channel_teardown_source;
 
   audio_input->prevent_dvc_initialization = TRUE;
-  audio_input->negotiation_state = NEGOTIATION_STATE_AWAIT_VERSION;
-  audio_input->runtime_state = RT_STATE_AWAIT_INCOMING_DATA;
+  audio_input->on_initialization_sequence = TRUE;
+  audio_input->state = AI_STATE_INIT;
 
   audio_input->requested_format_idx = -1;
   audio_input->alaw_client_format_idx = -1;
