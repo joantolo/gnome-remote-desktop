@@ -162,6 +162,76 @@ audio_input_state_to_string (AudioInputState state)
   g_assert_not_reached ();
 }
 
+static gboolean
+check_state_transition (AudioInputState current_state,
+                        AudioInputState requested_state)
+{
+  g_autofree char *allowed_states_str = NULL;
+  gboolean is_allowed = TRUE;
+
+  switch (current_state)
+    {
+    case AI_STATE_INIT:
+      is_allowed = requested_state == AI_STATE_AWAIT_VERSION;
+      allowed_states_str = g_strdup (audio_input_state_to_string (AI_STATE_AWAIT_VERSION));
+      break;
+    case AI_STATE_AWAIT_VERSION:
+      is_allowed = requested_state == AI_STATE_AWAIT_INCOMING_DATA;
+      allowed_states_str = g_strdup (audio_input_state_to_string (AI_STATE_AWAIT_INCOMING_DATA));
+      break;
+    case AI_STATE_AWAIT_SOUND_FORMATS:
+      is_allowed = requested_state == AI_STATE_AWAIT_FORMAT_CHANGE;
+      allowed_states_str = g_strdup (audio_input_state_to_string (AI_STATE_AWAIT_FORMAT_CHANGE));
+      break;
+    case AI_STATE_AWAIT_FORMAT_CHANGE:
+      is_allowed = requested_state == AI_STATE_AWAIT_OPEN_REPLY;
+      allowed_states_str = g_strdup (audio_input_state_to_string (AI_STATE_AWAIT_OPEN_REPLY));
+      break;
+    case AI_STATE_AWAIT_OPEN_REPLY:
+      is_allowed = requested_state == AI_STATE_AWAIT_INCOMING_DATA;
+      allowed_states_str = g_strdup (audio_input_state_to_string (AI_STATE_AWAIT_INCOMING_DATA));
+      break;
+    case AI_STATE_AWAIT_INCOMING_DATA:
+      is_allowed = requested_state == AI_STATE_AWAIT_DATA ||
+                   requested_state == AI_STATE_AWAIT_SOUND_FORMATS;
+      allowed_states_str = g_strdup_printf ("%s or %s",
+                                            audio_input_state_to_string (AI_STATE_AWAIT_DATA),
+                                            audio_input_state_to_string (AI_STATE_AWAIT_SOUND_FORMATS));
+      break;
+    case AI_STATE_AWAIT_DATA:
+      is_allowed = requested_state == AI_STATE_AWAIT_INCOMING_DATA;
+      allowed_states_str = g_strdup (audio_input_state_to_string (AI_STATE_AWAIT_INCOMING_DATA));
+      break;
+    }
+
+  if (!is_allowed)
+    g_warning ("[RDP.AUDIO_INPUT] State transition from %s to %s "
+               "is unexpected. Expected %s",
+               audio_input_state_to_string (current_state),
+               audio_input_state_to_string (requested_state),
+               allowed_states_str);
+
+  return is_allowed;
+}
+
+static gboolean
+transition_to_state (GrdRdpAudioInput *audio_input,
+                     AudioInputState   state)
+{
+  g_assert (audio_input->state != state);
+
+  g_debug ("[RDP.AUDIO_INPUT] Updating state from %s to %s",
+           audio_input_state_to_string (audio_input->state),
+           audio_input_state_to_string (state));
+
+  if (!check_state_transition (audio_input->state, state))
+    return FALSE;
+
+  audio_input->state = state;
+
+  return TRUE;
+}
+
 void
 grd_rdp_audio_input_maybe_init (GrdRdpAudioInput *audio_input)
 {
@@ -188,7 +258,13 @@ grd_rdp_audio_input_maybe_init (GrdRdpAudioInput *audio_input)
     }
   audio_input->channel_opened = TRUE;
 
-  audio_input->state = AI_STATE_AWAIT_VERSION;
+  if (!transition_to_state (audio_input, AI_STATE_AWAIT_VERSION))
+    {
+      g_warning ("Terminating protocol");
+      audio_input->channel_unavailable = TRUE;
+      g_source_set_ready_time (audio_input->channel_teardown_source, 0);
+      return;
+    }
 
   g_assert (!audio_input->protocol_timeout_source);
 
@@ -314,7 +390,13 @@ audin_receive_version (audin_server_context *audin_context,
 
   g_debug ("[RDP.AUDIO_INPUT] Client supports version %u", version->Version);
 
-  audio_input->state = AI_STATE_AWAIT_INCOMING_DATA;
+  if (!transition_to_state (audio_input, AI_STATE_AWAIT_INCOMING_DATA))
+    {
+      g_warning ("[RDP.AUDIO_INPUT] Terminating protocol");
+      g_source_set_ready_time (audio_input->channel_teardown_source, 0);
+
+      return CHANNEL_RC_INITIALIZATION_ERROR;
+    }
 
   formats.NumFormats = G_N_ELEMENTS (server_formats);
   formats.SoundFormats = server_formats;
@@ -434,7 +516,13 @@ audin_receive_formats (audin_server_context *audin_context,
            byte_count * 1000 / MAX (time_delta_us, 1),
            formats->cbSizeFormatsPacket, formats->ExtraDataSize);
 
-  audio_input->state = AI_STATE_AWAIT_FORMAT_CHANGE;
+  if (!transition_to_state (audio_input, AI_STATE_AWAIT_FORMAT_CHANGE))
+    {
+      g_warning ("Terminating protocol");
+      g_source_set_ready_time (audio_input->channel_teardown_source, 0);
+
+      return CHANNEL_RC_INITIALIZATION_ERROR;
+    }
 
   waveformat_extensible.Samples.wValidBitsPerSample = N_BYTES_PER_SAMPLE_PCM * 8;
   waveformat_extensible.dwChannelMask = SPEAKER_FRONT_LEFT |
@@ -489,7 +577,14 @@ audin_open_reply (audin_server_context   *audin_context,
   g_debug ("[RDP.AUDIO_INPUT] Received Open Reply PDU, HRESULT: %i",
            signed_result);
 
-  audio_input->state = AI_STATE_AWAIT_INCOMING_DATA;
+  if (!transition_to_state (audio_input, AI_STATE_AWAIT_INCOMING_DATA))
+    {
+      g_warning ("Terminating protocol");
+      g_source_set_ready_time (audio_input->channel_teardown_source, 0);
+
+      return CHANNEL_RC_INITIALIZATION_ERROR;
+    }
+
   audio_input->on_initialization_sequence = FALSE;
 
   return CHANNEL_RC_OK;
@@ -500,6 +595,7 @@ audin_incoming_data (audin_server_context      *audin_context,
                      const SNDIN_DATA_INCOMING *data_incoming)
 {
   GrdRdpAudioInput *audio_input = audin_context->userdata;
+  gboolean success;
 
   audio_input->incoming_data_time_us = g_get_monotonic_time ();
 
@@ -507,9 +603,17 @@ audin_incoming_data (audin_server_context      *audin_context,
     return CHANNEL_RC_OK;
 
   if (audio_input->on_initialization_sequence)
-    audio_input->state = AI_STATE_AWAIT_SOUND_FORMATS;
+    success = transition_to_state (audio_input, AI_STATE_AWAIT_SOUND_FORMATS);
   else
-    audio_input->state = AI_STATE_AWAIT_DATA;
+    success = transition_to_state (audio_input, AI_STATE_AWAIT_DATA);
+
+  if (!success)
+    {
+      g_warning ("Terminating protocol");
+      g_source_set_ready_time (audio_input->channel_teardown_source, 0);
+
+      return CHANNEL_RC_INITIALIZATION_ERROR;
+    }
 
   return CHANNEL_RC_OK;
 }
@@ -533,7 +637,13 @@ audin_data (audin_server_context *audin_context,
       return CHANNEL_RC_UNSUPPORTED_VERSION;
     }
 
-  audio_input->state = AI_STATE_AWAIT_INCOMING_DATA;
+  if (!transition_to_state (audio_input, AI_STATE_AWAIT_INCOMING_DATA))
+    {
+      g_warning ("[RDP.AUDIO_INPUT] Terminating protocol");
+      g_source_set_ready_time (audio_input->channel_teardown_source, 0);
+
+      return CHANNEL_RC_INITIALIZATION_ERROR;
+    }
 
   src_data = Stream_Pointer (data->Data);
   src_size = Stream_Length (data->Data);
@@ -609,8 +719,14 @@ audin_receive_format_change (audin_server_context     *audin_context,
            format_change->NewFormat,
            grd_rdp_dsp_codec_to_string (audio_input->codec));
 
-  if (audio_input->on_initialization_sequence)
-    audio_input->state = AI_STATE_AWAIT_OPEN_REPLY;
+  if (audio_input->on_initialization_sequence &&
+      !transition_to_state (audio_input, AI_STATE_AWAIT_OPEN_REPLY))
+    {
+      g_warning ("Terminating protocol");
+      g_source_set_ready_time (audio_input->channel_teardown_source, 0);
+
+      return CHANNEL_RC_INITIALIZATION_ERROR;
+    }
 
   return CHANNEL_RC_OK;
 }
