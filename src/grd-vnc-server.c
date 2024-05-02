@@ -32,6 +32,8 @@
 #include "grd-session-vnc.h"
 #include "grd-utils.h"
 
+#define VNC_SERVER_MESSAGE_TAG "[VNC]"
+
 enum
 {
   PROP_0,
@@ -149,6 +151,7 @@ grd_vnc_server_start (GrdVncServer  *vnc_server,
                         vnc_port,
                         &selected_vnc_port,
                         negotiate_port,
+                        VNC_SERVER_MESSAGE_TAG,
                         error))
     return FALSE;
 

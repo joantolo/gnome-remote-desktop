@@ -35,6 +35,7 @@
 
 #define RDP_SERVER_N_BINDING_ATTEMPTS 10
 #define RDP_SERVER_BINDING_ATTEMPT_INTERVAL_MS 500
+#define RDP_SERVER_MESSAGE_TAG "[RDP]"
 
 enum
 {
@@ -265,6 +266,7 @@ attempt_to_bind_port (gpointer user_data)
                        rdp_port,
                        &selected_rdp_port,
                        FALSE,
+                       RDP_SERVER_MESSAGE_TAG,
                        NULL))
     {
       g_assert (selected_rdp_port != 0);
@@ -320,6 +322,7 @@ bind_socket (GrdRdpServer  *rdp_server,
                             rdp_port,
                             &selected_rdp_port,
                             negotiate_port,
+                            RDP_SERVER_MESSAGE_TAG,
                             error))
         return FALSE;
       break;
@@ -328,6 +331,7 @@ bind_socket (GrdRdpServer  *rdp_server,
                            rdp_port,
                            &selected_rdp_port,
                            FALSE,
+                           RDP_SERVER_MESSAGE_TAG,
                            error))
         break;
 
