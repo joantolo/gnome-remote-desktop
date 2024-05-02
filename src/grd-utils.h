@@ -70,4 +70,16 @@ gboolean grd_write_fd_to_file (int            fd,
                                const char    *filename,
                                GCancellable  *cancellable,
                                GError       **error);
+
+gboolean enable_systemd_unit (GBusType     bus_type,
+                              const char  *unit,
+                              GError     **error);
+
+gboolean disable_systemd_unit (GBusType     bus_type,
+                               const char  *unit,
+                               GError     **error);
+
+gboolean systemd_unit_is_active (GBusType     bus_type,
+                                 const char  *unit,
+                                 GError     **error);
 #endif /* GRD_UTILS_H */
