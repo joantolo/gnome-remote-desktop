@@ -7,6 +7,7 @@
   <!-- Only @GRD_USERNAME@ user can own the service -->
   <policy user="@GRD_USERNAME@">
     <allow own="org.gnome.RemoteDesktop"/>
+    <allow own="org.gnome.RemoteDesktop.Configure"/>
   </policy>
 
   <!-- Anyone can send messages to the interfaces of the service -->
@@ -25,6 +26,15 @@
            send_interface="org.freedesktop.DBus.Introspectable"/>
     <allow send_destination="org.gnome.RemoteDesktop"
            send_interface="org.freedesktop.DBus.ObjectManager"/>
+  </policy>
+
+  <policy context="default">
+    <allow send_destination="org.gnome.RemoteDesktop.Configure"
+           send_interface="org.gnome.RemoteDesktop.Configure.Rdp.Server"/>
+    <allow send_destination="org.gnome.RemoteDesktop.Configure"
+           send_interface="org.freedesktop.DBus.Properties"/>
+    <allow send_destination="org.gnome.RemoteDesktop.Configure"
+           send_interface="org.freedesktop.DBus.Introspectable"/>
   </policy>
 
 </busconfig>

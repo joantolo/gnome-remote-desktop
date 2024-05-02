@@ -1,0 +1,6 @@
+[D-BUS Service]
+Name=org.gnome.RemoteDesktop.Configure
+Exec=@libexecdir@/grdctl-dbus
+User=@GRD_USERNAME@
+SystemdService=gnome-remote-desktop-ctl.service
+
