@@ -182,7 +182,6 @@ if have_rdp
     freerdp_server_dep,
     fuse_dep,
     opus_dep,
-    polkit_dep,
     winpr_dep,
   ]
 endif
@@ -277,6 +276,7 @@ ctl_deps = [
   glib_dep,
   gio_dep,
   gio_unix_dep,
+  polkit_dep,
   credentials_deps,
 ]
 
