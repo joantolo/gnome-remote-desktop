@@ -34,7 +34,7 @@ typedef struct _GrdSyncPoint
 
 typedef enum
 {
-  GRD_SYSTEMD_UNIT_ACTIVE_STATE_UNKNOWN,
+  GRD_SYSTEMD_UNIT_ACTIVE_STATE_UNKNOWN = 0,
   GRD_SYSTEMD_UNIT_ACTIVE_STATE_ACTIVE,
   GRD_SYSTEMD_UNIT_ACTIVE_STATE_RELOADING,
   GRD_SYSTEMD_UNIT_ACTIVE_STATE_INACTIVE,
@@ -89,8 +89,12 @@ gboolean grd_test_fd (int         fd,
 gboolean grd_toggle_systemd_unit (gboolean   enabled,
                                   GError   **error);
 
-gboolean grd_systemd_unit_get_active_state (GBusType                    bus_type,
-                                            const char                 *unit,
+gboolean grd_systemd_get_unit (GBusType      bus_type,
+                               const char   *unit,
+                               GDBusProxy **proxy,
+                               GError      **error);
+
+gboolean grd_systemd_unit_get_active_state (GDBusProxy                 *unit_proxy,
                                             GrdSystemdUnitActiveState  *active_state,
                                             GError                    **error);
 #endif /* GRD_UTILS_H */
