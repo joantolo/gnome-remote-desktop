@@ -36,7 +36,7 @@
 #include "grd-session-rdp.h"
 #include "grd-settings.h"
 
-#define MAX_HANDOVER_WAIT_TIME_MS (30 * 1000)
+#define MAX_HANDOVER_WAIT_TIME_S 30
 
 typedef struct
 {
@@ -182,7 +182,7 @@ on_handle_take_client (GrdDBusRemoteDesktopRdpHandover *interface,
   return G_DBUS_METHOD_INVOCATION_HANDLED;
 }
 
-static gboolean
+static void
 abort_handover (gpointer user_data)
 {
   GrdRemoteClient *remote_client = user_data;
@@ -198,8 +198,6 @@ abort_handover (gpointer user_data)
     }
 
   g_hash_table_remove (daemon_system->remote_clients, remote_client->id);
-
-  return G_SOURCE_REMOVE;
 }
 
 static char *
@@ -412,7 +410,9 @@ on_handle_start_handover (GrdDBusRemoteDesktopRdpHandover *interface,
   if (remote_client->abort_handover_source_id == 0)
     {
       remote_client->abort_handover_source_id =
-        g_timeout_add (MAX_HANDOVER_WAIT_TIME_MS, abort_handover, remote_client);
+        g_timeout_add_seconds_once (MAX_HANDOVER_WAIT_TIME_S,
+                                    abort_handover,
+                                    remote_client);
     }
 
   return G_DBUS_METHOD_INVOCATION_HANDLED;
@@ -607,7 +607,9 @@ remote_client_new (GrdDaemonSystem *daemon_system,
                      remote_client);
 
   remote_client->abort_handover_source_id =
-    g_timeout_add (MAX_HANDOVER_WAIT_TIME_MS, abort_handover, remote_client);
+    g_timeout_add_seconds_once (MAX_HANDOVER_WAIT_TIME_S,
+                                abort_handover,
+                                remote_client);
 
   return remote_client;
 }
