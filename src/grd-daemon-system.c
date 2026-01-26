@@ -29,6 +29,7 @@
 #include "grd-context.h"
 #include "grd-daemon.h"
 #include "grd-daemon-utils.h"
+#include "grd-types.h"
 #include "grd-dbus-gdm.h"
 #include "grd-dbus-remote-desktop.h"
 #include "grd-private.h"
@@ -37,6 +38,23 @@
 #include "grd-settings.h"
 
 #define MAX_HANDOVER_WAIT_TIME_S 30
+
+static const GDBusErrorEntry grd_dbus_error_entries[] =
+{
+  { GRD_DBUS_ERROR_NO_HANDOVER, "org.gnome.RemoteDesktop.Error.NoHandover" },
+};
+
+GQuark
+grd_dbus_error_quark (void)
+{
+  static gsize quark = 0;
+
+  g_dbus_error_register_error_domain ("grd-dbus-error-quark",
+                                      &quark,
+                                      grd_dbus_error_entries,
+                                      G_N_ELEMENTS (grd_dbus_error_entries));
+  return (GQuark) quark;
+}
 
 typedef struct
 {
@@ -276,9 +294,9 @@ get_handover_object_path_for_call (GrdDaemonSystem        *daemon_system,
   if (!object)
     {
       g_set_error (error,
-                   G_DBUS_ERROR,
-                   G_DBUS_ERROR_UNKNOWN_OBJECT,
-                   "No connection waiting for handover");
+                   GRD_DBUS_ERROR,
+                   GRD_DBUS_ERROR_NO_HANDOVER,
+                   "No handover interface for session");
       return NULL;
     }
 

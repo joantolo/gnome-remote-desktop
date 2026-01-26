@@ -22,6 +22,8 @@
 
 #pragma once
 
+#include <glib.h>
+
 typedef struct _GrdAVCFrameInfo GrdAVCFrameInfo;
 typedef struct _GrdBitstream GrdBitstream;
 typedef struct _GrdClipboard GrdClipboard;
@@ -93,3 +95,12 @@ typedef enum _GrdPixelFormat
 {
   GRD_PIXEL_FORMAT_RGBA8888,
 } GrdPixelFormat;
+
+#define GRD_DBUS_ERROR (grd_dbus_error_quark ())
+
+typedef enum
+{
+  GRD_DBUS_ERROR_NO_HANDOVER,
+} GrdDBusError;
+
+GQuark grd_dbus_error_quark (void);
