@@ -39,6 +39,7 @@
 #include "grd-rdp-server.h"
 #include "grd-settings-system.h"
 #include "grd-settings-user.h"
+#include "grd-types.h"
 #include "grd-vnc-server.h"
 
 #ifdef HAVE_LIBSYSTEMD
@@ -96,6 +97,23 @@ G_DEFINE_TYPE_WITH_PRIVATE (GrdDaemon, grd_daemon, G_TYPE_APPLICATION)
 #ifdef HAVE_RDP
 static void maybe_start_rdp_server (GrdDaemon *daemon);
 #endif
+
+static const GDBusErrorEntry grd_dbus_error_entries[] =
+{
+  { GRD_DBUS_ERROR_NO_HANDOVER, "org.gnome.RemoteDesktop.Error.NoHandover" },
+};
+
+GQuark
+grd_dbus_error_quark (void)
+{
+  static gsize quark = 0;
+
+  g_dbus_error_register_error_domain ("grd-dbus-error-quark",
+                                      &quark,
+                                      grd_dbus_error_entries,
+                                      G_N_ELEMENTS (grd_dbus_error_entries));
+  return (GQuark) quark;
+}
 
 GCancellable *
 grd_daemon_get_cancellable (GrdDaemon *daemon)

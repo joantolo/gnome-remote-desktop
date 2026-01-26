@@ -23,6 +23,8 @@
 #ifndef GRD_TYPES_H
 #define GRD_TYPES_H
 
+#include <glib.h>
+
 typedef struct _GrdClipboard GrdClipboard;
 typedef struct _GrdClipboardRdp GrdClipboardRdp;
 typedef struct _GrdClipboardVnc GrdClipboardVnc;
@@ -68,5 +70,13 @@ typedef enum _GrdPixelFormat
 {
   GRD_PIXEL_FORMAT_RGBA8888,
 } GrdPixelFormat;
+
+typedef enum _GrdDBusError
+{
+  GRD_DBUS_ERROR_NO_HANDOVER,
+} GrdDBusError;
+
+#define GRD_DBUS_ERROR grd_dbus_error_quark ()
+GQuark grd_dbus_error_quark (void);
 
 #endif /* GRD_TYPES_H */
