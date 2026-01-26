@@ -32,6 +32,7 @@
 #include "grd-daemon.h"
 #include "grd-daemon-utils.h"
 #include "grd-dbus-remote-desktop.h"
+#include "grd-types.h"
 #include "grd-private.h"
 #include "grd-prompt.h"
 #include "grd-rdp-server.h"
@@ -46,6 +47,8 @@ struct _GrdDaemonHandover
   GrdDBusRemoteDesktopRdpDispatcher *remote_desktop_dispatcher;
   GrdDBusRemoteDesktopRdpHandover *remote_desktop_handover;
 
+  GDBusObjectManager *handover_object_manager;
+
   GrdSession *session;
 
   gboolean use_system_credentials;
@@ -58,6 +61,11 @@ struct _GrdDaemonHandover
 };
 
 G_DEFINE_TYPE (GrdDaemonHandover, grd_daemon_handover, GRD_TYPE_DAEMON)
+
+static void
+on_remote_desktop_rdp_dispatcher_handover_requested (GObject      *object,
+                                                     GAsyncResult *result,
+                                                     gpointer      user_data);
 
 static gboolean
 grd_daemon_handover_is_ready (GrdDaemon *daemon)
@@ -557,6 +565,83 @@ on_rdp_server_stopped (GrdDaemonHandover *daemon_handover)
 }
 
 static void
+on_handover_object_added (GDBusObjectManager *manager,
+                          GDBusObject        *object,
+                          GrdDaemonHandover  *daemon_handover)
+{
+  GCancellable *cancellable;
+
+  cancellable = grd_daemon_get_cancellable (GRD_DAEMON (daemon_handover));
+  grd_dbus_remote_desktop_rdp_dispatcher_call_request_handover (
+    daemon_handover->remote_desktop_dispatcher,
+    cancellable,
+    on_remote_desktop_rdp_dispatcher_handover_requested,
+    daemon_handover);
+}
+
+static void
+on_handover_object_manager_acquired (GObject      *source_object,
+                                     GAsyncResult *result,
+                                     gpointer      user_data)
+{
+  g_autoptr (GDBusObjectManager) manager = NULL;
+  g_autoptr (GError) error = NULL;
+  GrdDaemonHandover *daemon_handover;
+
+  manager =
+    grd_dbus_remote_desktop_object_manager_client_new_for_bus_finish (result, 
+                                                                      &error);
+  if (!manager)
+    {
+      if (!g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+        g_warning ("[DaemonHandover] Failed to create handover object manager: %s",
+                   error->message);
+      return;
+    }
+
+  daemon_handover = GRD_DAEMON_HANDOVER (user_data);
+  daemon_handover->handover_object_manager = g_steal_pointer (&manager);
+
+  g_debug ("[DaemonHandover] Watching handover objects");
+
+  g_signal_connect (daemon_handover->handover_object_manager, "object-added",
+                    G_CALLBACK (on_handover_object_added), daemon_handover);
+}
+
+static void
+start_watching_handover_objects (GrdDaemonHandover *daemon_handover)
+{
+  GCancellable *cancellable;
+
+  if (daemon_handover->handover_object_manager)
+    return;
+
+  cancellable = grd_daemon_get_cancellable (GRD_DAEMON (daemon_handover));
+
+  grd_dbus_remote_desktop_object_manager_client_new_for_bus (
+    G_BUS_TYPE_SYSTEM,
+    G_DBUS_OBJECT_MANAGER_CLIENT_FLAGS_DO_NOT_AUTO_START,
+    REMOTE_DESKTOP_BUS_NAME,
+    REMOTE_DESKTOP_HANDOVERS_OBJECT_PATH,
+    cancellable,
+    on_handover_object_manager_acquired,
+    daemon_handover);
+}
+
+static void
+stop_watching_handover_objects (GrdDaemonHandover *daemon_handover)
+{
+  if (!daemon_handover->handover_object_manager)
+    return;
+
+  g_signal_handlers_disconnect_by_func (daemon_handover->handover_object_manager,
+                                        G_CALLBACK (on_handover_object_added),
+                                        daemon_handover);
+
+  g_clear_object (&daemon_handover->handover_object_manager);
+}
+
+static void
 on_remote_desktop_rdp_handover_proxy_acquired (GObject      *object,
                                                GAsyncResult *result,
                                                gpointer      user_data)
@@ -579,6 +664,9 @@ on_remote_desktop_rdp_handover_proxy_acquired (GObject      *object,
     }
 
   daemon_handover = GRD_DAEMON_HANDOVER (user_data);
+
+  stop_watching_handover_objects (daemon_handover);
+
   daemon_handover->remote_desktop_handover = g_steal_pointer (&proxy);
 
   setup_handover (daemon_handover);
@@ -607,11 +695,16 @@ on_remote_desktop_rdp_dispatcher_handover_requested (GObject      *object,
       &error);
   if (!success)
     {
-      if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
-        return;
-
-      g_warning ("[DaemonHandover] Failed to request remote desktop "
-                 "handover: %s", error->message);
+      if (g_error_matches (error, GRD_DBUS_ERROR, GRD_DBUS_ERROR_NO_HANDOVER))
+        {
+          daemon_handover = GRD_DAEMON_HANDOVER (user_data);
+          start_watching_handover_objects (daemon_handover);
+        }
+      else if (!g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+        {
+          g_warning ("[DaemonHandover] Failed to request remote desktop "
+                     "handover: %s", error->message);
+        }
       return;
     }
 
@@ -700,6 +793,8 @@ on_gnome_remote_desktop_name_vanished (GDBusConnection *connection,
   g_clear_object (&daemon_handover->remote_desktop_handover);
   g_clear_object (&daemon_handover->remote_desktop_dispatcher);
 
+  stop_watching_handover_objects (daemon_handover);
+
   if (grd_is_remote_login ())
     grd_session_manager_call_logout_sync ();
 }
@@ -762,6 +857,8 @@ grd_daemon_handover_shutdown (GApplication *app)
 
   g_clear_object (&daemon_handover->remote_desktop_handover);
   g_clear_object (&daemon_handover->remote_desktop_dispatcher);
+
+  stop_watching_handover_objects (daemon_handover);
 
   g_clear_handle_id (&daemon_handover->gnome_remote_desktop_watch_name_id,
                      g_bus_unwatch_name);
