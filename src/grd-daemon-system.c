@@ -864,32 +864,6 @@ on_remote_display_factory_name_owner_changed (GrdDBusGdmRemoteDisplayFactory *re
 }
 
 static void
-on_remote_display_factory_proxy_acquired (GObject      *object,
-                                          GAsyncResult *result,
-                                          gpointer      user_data)
-{
-  GrdDaemonSystem *daemon_system = user_data;
-  g_autoptr (GError) error = NULL;
-
-  daemon_system->remote_display_factory_proxy =
-    grd_dbus_gdm_remote_display_factory_proxy_new_for_bus_finish (result,
-                                                                  &error);
-  if (!daemon_system->remote_display_factory_proxy)
-    {
-      g_warning ("[DaemonSystem] Failed to acquire GDM remote display "
-                 "factory proxy: %s", error->message);
-      return;
-    }
-
-  g_signal_connect (G_OBJECT (daemon_system->remote_display_factory_proxy),
-                    "notify::g-name-owner",
-                    G_CALLBACK (on_remote_display_factory_name_owner_changed),
-                    daemon_system);
-
-  grd_daemon_maybe_enable_services (GRD_DAEMON (daemon_system));
-}
-
-static void
 steal_handover_from_client (GrdRemoteClient *new_remote_client,
                             GrdRemoteClient *old_remote_client)
 {
@@ -1348,6 +1322,50 @@ grd_daemon_system_own_name_fiber (gpointer user_data)
 }
 
 static DexFuture *
+grd_daemon_system_get_remote_display_factory_fiber (gpointer user_data)
+{
+  GrdDaemonSystem *daemon_system = user_data;
+  g_autoptr (DexFuture) cancellable = NULL;
+  g_autoptr (GDBusConnection) connection = NULL;
+  g_autoptr (GError) error = NULL;
+
+  if (daemon_system->remote_display_factory_proxy)
+    return dex_future_new_true ();
+
+  cancellable = dex_cancellable_new_from_cancellable (
+                 grd_daemon_get_cancellable (GRD_DAEMON (daemon_system)));
+
+  connection = dex_await_object (dex_future_first (dex_bus_get (G_BUS_TYPE_SYSTEM),
+                                                   dex_ref (cancellable),
+                                                   NULL),
+                                 &error);
+  if (!connection)
+    return dex_future_new_for_error (g_steal_pointer (&error));
+
+  daemon_system->remote_display_factory_proxy = dex_await_object (
+    dex_future_first (
+      grd_dbus_gdm_remote_display_factory_proxy_new_future (
+        connection,
+        G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
+        GDM_BUS_NAME,
+        GDM_REMOTE_DISPLAY_FACTORY_OBJECT_PATH),
+      dex_ref (cancellable),
+      NULL),
+    &error);
+  if (!daemon_system->remote_display_factory_proxy)
+    return dex_future_new_for_error (g_steal_pointer (&error));
+
+  g_signal_connect (G_OBJECT (daemon_system->remote_display_factory_proxy),
+                    "notify::g-name-owner",
+                    G_CALLBACK (on_remote_display_factory_name_owner_changed),
+                    daemon_system);
+
+  grd_daemon_maybe_enable_services (GRD_DAEMON (daemon_system));
+
+  return dex_future_new_true ();
+}
+
+static DexFuture *
 log_fiber_error (DexFuture *future,
                  gpointer   user_data)
 {
@@ -1374,6 +1392,23 @@ grd_daemon_system_own_name (GrdDaemonSystem *daemon_system)
   dex_future_disown (dex_future_catch (future,
                                        log_fiber_error,
                                        "[DaemonSystem] Failed to own name: ",
+                                       NULL));
+}
+
+static void
+grd_daemon_system_get_remote_display_factory (GrdDaemonSystem *daemon_system)
+{
+  DexFuture *future;
+
+  future = dex_scheduler_spawn (NULL, 0,
+                                grd_daemon_system_get_remote_display_factory_fiber,
+                                daemon_system,
+                                NULL);
+
+  dex_future_disown (dex_future_catch (future,
+                                       log_fiber_error,
+                                       "[DaemonSystem] Failed getting remote "
+                                       "display factory: ",
                                        NULL));
 }
 
@@ -1420,15 +1455,7 @@ grd_daemon_system_startup (GApplication *app)
     g_dbus_object_manager_server_new (REMOTE_DESKTOP_HANDOVERS_OBJECT_PATH);
 
   grd_daemon_system_own_name (daemon_system);
-
-  grd_dbus_gdm_remote_display_factory_proxy_new_for_bus (
-    G_BUS_TYPE_SYSTEM,
-    G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
-    GDM_BUS_NAME,
-    GDM_REMOTE_DISPLAY_FACTORY_OBJECT_PATH,
-    cancellable,
-    on_remote_display_factory_proxy_acquired,
-    daemon_system);
+  grd_daemon_system_get_remote_display_factory (daemon_system);
 
   grd_dbus_gdm_object_manager_client_new_for_bus (
     G_BUS_TYPE_SYSTEM,
