@@ -25,6 +25,7 @@
 #include "grd-daemon-system.h"
 
 #include <gio/gunixfdlist.h>
+#include <libdex.h>
 
 #include "grd-context.h"
 #include "grd-daemon.h"
@@ -90,7 +91,6 @@ struct _GrdDaemonSystem
   GrdDBusGdmRemoteDisplayFactory *remote_display_factory_proxy;
   GDBusObjectManager *display_objects;
 
-  unsigned int system_grd_name_id;
   GrdDBusRemoteDesktopRdpDispatcher *dispatcher_skeleton;
   GDBusObjectManagerServer *handover_manager_server;
 
@@ -845,44 +845,6 @@ on_handle_request_handover (GrdDBusRemoteDesktopRdpDispatcher *skeleton,
 }
 
 static void
-on_system_grd_bus_acquired (GDBusConnection *connection,
-                            const char      *name,
-                            gpointer         user_data)
-{
-  GrdDaemonSystem *daemon_system = user_data;
-
-  g_debug ("[DaemonSystem] Now on system bus");
-
-  g_dbus_object_manager_server_set_connection (
-    daemon_system->handover_manager_server,
-    connection);
-
-  g_dbus_interface_skeleton_export (
-    G_DBUS_INTERFACE_SKELETON (daemon_system->dispatcher_skeleton),
-    connection,
-    REMOTE_DESKTOP_DISPATCHER_OBJECT_PATH,
-    NULL);
-
-  grd_daemon_maybe_enable_services (GRD_DAEMON (daemon_system));
-}
-
-static void
-on_system_grd_name_acquired (GDBusConnection *connection,
-                             const char      *name,
-                             gpointer         user_data)
-{
-  g_debug ("[DaemonSystem] Owned %s name", name);
-}
-
-static void
-on_system_grd_name_lost (GDBusConnection *connection,
-                         const char      *name,
-                         gpointer         user_data)
-{
-  g_debug ("[DaemonSystem] Lost owned %s name", name);
-}
-
-static void
 on_remote_display_factory_name_owner_changed (GrdDBusGdmRemoteDisplayFactory *remote_display_factory_proxy,
                                               GParamSpec                     *pspec,
                                               GrdDaemonSystem                *daemon_system)
@@ -1293,6 +1255,128 @@ on_gdm_object_manager_client_acquired (GObject      *source_object,
   grd_daemon_maybe_enable_services (GRD_DAEMON (daemon_system));
 }
 
+static void
+on_name_acquired (GrdDaemonSystem *daemon_system,
+                  GDBusConnection *connection)
+{
+  g_debug ("[DaemonSystem] Acquired %s name", REMOTE_DESKTOP_BUS_NAME);
+
+  if (daemon_system->handover_manager_server &&
+      !g_dbus_object_manager_server_get_connection (
+        daemon_system->handover_manager_server))
+    {
+      g_dbus_object_manager_server_set_connection (
+        daemon_system->handover_manager_server,
+        connection);
+    }
+
+  if (daemon_system->dispatcher_skeleton &&
+      !g_dbus_interface_skeleton_get_connection (
+        G_DBUS_INTERFACE_SKELETON (daemon_system->dispatcher_skeleton)))
+    {
+      g_dbus_interface_skeleton_export (
+        G_DBUS_INTERFACE_SKELETON (daemon_system->dispatcher_skeleton),
+        connection,
+        REMOTE_DESKTOP_DISPATCHER_OBJECT_PATH,
+        NULL);
+    }
+
+  grd_daemon_maybe_enable_services (GRD_DAEMON (daemon_system));
+}
+
+static void
+on_name_lost (GrdDaemonSystem *daemon_system)
+{
+  g_debug ("[DaemonSystem] Lost %s name", REMOTE_DESKTOP_BUS_NAME);
+
+  if (daemon_system->dispatcher_skeleton)
+    {
+      g_dbus_interface_skeleton_unexport (
+        G_DBUS_INTERFACE_SKELETON (daemon_system->dispatcher_skeleton));
+    }
+
+  if (daemon_system->handover_manager_server)
+    {
+      g_dbus_object_manager_server_set_connection (
+        daemon_system->handover_manager_server,
+        NULL);
+    }
+
+  grd_daemon_disable_services (GRD_DAEMON (daemon_system));
+}
+
+static DexFuture *
+grd_daemon_system_own_name_fiber (gpointer user_data)
+{
+  GrdDaemonSystem *daemon_system = user_data;
+  g_autoptr (GDBusConnection) connection = NULL;
+  g_autoptr (DexFuture) cancellable = NULL;
+  g_autoptr (DexFuture) name_acquired = NULL;
+  g_autoptr (DexFuture) name_lost = NULL;
+  g_autoptr (GError) error = NULL;
+
+  cancellable = dex_cancellable_new_from_cancellable (
+                 grd_daemon_get_cancellable (GRD_DAEMON (daemon_system)));
+
+  connection = dex_await_object (dex_future_first (dex_bus_get (G_BUS_TYPE_SYSTEM),
+                                                   dex_ref (cancellable),
+                                                   NULL),
+                                 &error);
+  if (!connection)
+    return dex_future_new_for_error (g_steal_pointer (&error));
+
+  dex_bus_own_name_on_connection (connection,
+                                  REMOTE_DESKTOP_BUS_NAME,
+                                  G_BUS_NAME_OWNER_FLAGS_NONE,
+                                  &name_acquired,
+                                  &name_lost);
+
+  if (!dex_await (dex_future_first (dex_ref (name_acquired),
+                                    dex_ref (cancellable),
+                                    NULL),
+                  &error))
+    return dex_future_new_for_error (g_steal_pointer (&error));
+  on_name_acquired (daemon_system, connection);
+
+  dex_await (dex_future_first (dex_ref (name_lost),
+                               dex_ref (cancellable),
+                               NULL),
+             NULL);
+  on_name_lost (daemon_system);
+
+  return dex_future_new_true ();
+}
+
+static DexFuture *
+log_fiber_error (DexFuture *future,
+                 gpointer   user_data)
+{
+  g_autoptr (GError) error = NULL;
+  const char *msg = user_data;
+
+  dex_future_get_value (dex_ref (future), &error);
+  if (error)
+    g_warning ("%s%s", msg, error->message);
+
+  return NULL;
+}
+
+static void
+grd_daemon_system_own_name (GrdDaemonSystem *daemon_system)
+{
+  DexFuture *future;
+
+  future = dex_scheduler_spawn (NULL, 0,
+                                grd_daemon_system_own_name_fiber,
+                                daemon_system,
+                                NULL);
+
+  dex_future_disown (dex_future_catch (future,
+                                       log_fiber_error,
+                                       "[DaemonSystem] Failed to own name: ",
+                                       NULL));
+}
+
 GrdDaemonSystem *
 grd_daemon_system_new (GError **error)
 {
@@ -1335,14 +1419,7 @@ grd_daemon_system_startup (GApplication *app)
   daemon_system->handover_manager_server =
     g_dbus_object_manager_server_new (REMOTE_DESKTOP_HANDOVERS_OBJECT_PATH);
 
-  daemon_system->system_grd_name_id =
-    g_bus_own_name (G_BUS_TYPE_SYSTEM,
-                    REMOTE_DESKTOP_BUS_NAME,
-                    G_BUS_NAME_OWNER_FLAGS_NONE,
-                    on_system_grd_bus_acquired,
-                    on_system_grd_name_acquired,
-                    on_system_grd_name_lost,
-                    daemon_system, NULL);
+  grd_daemon_system_own_name (daemon_system);
 
   grd_dbus_gdm_remote_display_factory_proxy_new_for_bus (
     G_BUS_TYPE_SYSTEM,
@@ -1376,6 +1453,8 @@ grd_daemon_system_shutdown (GApplication *app)
 {
   GrdDaemonSystem *daemon_system = GRD_DAEMON_SYSTEM (app);
 
+  g_cancellable_cancel (grd_daemon_get_cancellable (GRD_DAEMON (daemon_system)));
+
   g_clear_pointer (&daemon_system->remote_clients, g_hash_table_unref);
 
   g_clear_object (&daemon_system->display_objects);
@@ -1386,8 +1465,6 @@ grd_daemon_system_shutdown (GApplication *app)
   g_clear_object (&daemon_system->dispatcher_skeleton);
 
   g_clear_object (&daemon_system->handover_manager_server);
-  g_clear_handle_id (&daemon_system->system_grd_name_id,
-                     g_bus_unown_name);
 
   G_APPLICATION_CLASS (grd_daemon_system_parent_class)->shutdown (app);
 }

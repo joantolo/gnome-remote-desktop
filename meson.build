@@ -50,6 +50,8 @@ if have_rdp
   dl_dep = cc.find_library('dl', required: true)
 
   cuda_dep = dependency('ffnvcodec', version: cuda_req)
+  libdex_dep = dependency('libdex-1')
+  libdex_gdbus_codegen_ext = libdex_dep.get_variable(pkgconfig: 'gdbus_codegen_extension')
   fdk_aac_dep = dependency('fdk-aac')
   freerdp_dep = dependency('freerdp3', version: freerdp_req)
   freerdp_client_dep = dependency('freerdp-client3', version: freerdp_req)

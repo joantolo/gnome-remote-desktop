@@ -254,6 +254,7 @@ if have_rdp
     freerdp_dep,
     freerdp_server_dep,
     fuse_dep,
+    libdex_dep,
     libva_dep,
     libva_drm_dep,
     m_dep,
@@ -307,7 +308,8 @@ if have_rdp
                                             'org.gnome.DisplayManager.xml',
                                             object_manager: true,
                                             interface_prefix: 'org.gnome.DisplayManager.',
-                                            namespace: 'GrdDBusGdm')
+                                            namespace: 'GrdDBusGdm',
+                                            extra_args: [f'--extension-path=@libdex_gdbus_codegen_ext@'])
 endif
 
 gen_enum_types = gnome.mkenums('grd-enum-types',
