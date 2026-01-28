@@ -1191,45 +1191,6 @@ on_gdm_display_objects_name_owner_changed (GDBusObjectManager *display_objects,
 }
 
 static void
-on_gdm_object_manager_client_acquired (GObject      *source_object,
-                                       GAsyncResult *result,
-                                       gpointer      user_data)
-{
-  GrdDaemonSystem *daemon_system = user_data;
-  g_autoptr (GError) error = NULL;
-
-  daemon_system->display_objects =
-    grd_dbus_gdm_object_manager_client_new_for_bus_finish (result, &error);
-  if (!daemon_system->display_objects)
-    {
-      g_warning ("[DaemonSystem] Error connecting to display manager: %s",
-                 error->message);
-      return;
-    }
-
-  foreach_remote_display (daemon_system, register_handover_for_display);
-
-  g_signal_connect_object (daemon_system->display_objects,
-                           "object-added",
-                           G_CALLBACK (on_gdm_object_added),
-                           daemon_system,
-                           G_CONNECT_SWAPPED);
-
-  g_signal_connect_object (daemon_system->display_objects,
-                           "object-removed",
-                           G_CALLBACK (on_gdm_object_removed),
-                           daemon_system,
-                           G_CONNECT_SWAPPED);
-
-  g_signal_connect (G_OBJECT (daemon_system->display_objects),
-                    "notify::name-owner",
-                    G_CALLBACK (on_gdm_display_objects_name_owner_changed),
-                    daemon_system);
-
-  grd_daemon_maybe_enable_services (GRD_DAEMON (daemon_system));
-}
-
-static void
 on_name_acquired (GrdDaemonSystem *daemon_system,
                   GDBusConnection *connection)
 {
@@ -1365,6 +1326,97 @@ grd_daemon_system_get_remote_display_factory_fiber (gpointer user_data)
   return dex_future_new_true ();
 }
 
+// TODO this func should be defined from gdbus codegen
+static void
+grd_dbus_gdm_object_manager_client_new_future_cb (GObject      *source_object,
+                                                  GAsyncResult *result,
+                                                  gpointer      user_data)
+{
+  g_autoptr (DexPromise) promise = DEX_PROMISE (user_data);
+  g_autoptr (GDBusObjectManager) manager = NULL;
+  g_autoptr (GError) error = NULL;
+  manager = grd_dbus_gdm_object_manager_client_new_finish (result, &error);
+  if (!manager)
+    dex_promise_reject (promise, g_steal_pointer (&error));
+  else
+    dex_promise_resolve_object (promise, g_steal_pointer (&manager));
+}
+
+// TODO this func should be defined from gdbus codegen
+static DexFuture *
+grd_dbus_gdm_object_manager_client_new_future (GDBusConnection               *connection,
+                                               GDBusObjectManagerClientFlags  flags,
+                                               const gchar                   *name,
+                                               const gchar                   *object_path)
+{
+  DexPromise *promise = dex_promise_new_cancellable ();
+  grd_dbus_gdm_object_manager_client_new (
+    connection,
+    flags,
+    name,
+    object_path,
+    dex_promise_get_cancellable (promise),
+    grd_dbus_gdm_object_manager_client_new_future_cb,
+    dex_ref (promise));
+  return DEX_FUTURE (promise);
+}
+
+static DexFuture *
+grd_daemon_system_get_gdm_object_manager_fiber (gpointer user_data)
+{
+  GrdDaemonSystem *daemon_system = user_data;
+  g_autoptr (DexFuture) cancellable = NULL;
+  g_autoptr (GDBusConnection) connection = NULL;
+  g_autoptr (GError) error = NULL;
+
+  if (daemon_system->display_objects)
+    return dex_future_new_true ();
+
+  cancellable = dex_cancellable_new_from_cancellable (
+                 grd_daemon_get_cancellable (GRD_DAEMON (daemon_system)));
+
+  connection = dex_await_object (dex_future_first (dex_bus_get (G_BUS_TYPE_SYSTEM),
+                                                   dex_ref (cancellable),
+                                                   NULL),
+                                 &error);
+  if (!connection)
+    return dex_future_new_for_error (g_steal_pointer (&error));
+
+  daemon_system->display_objects = dex_await_object (
+    dex_future_first (
+      grd_dbus_gdm_object_manager_client_new_future (
+        connection,
+        G_DBUS_OBJECT_MANAGER_CLIENT_FLAGS_DO_NOT_AUTO_START,
+        GDM_BUS_NAME,
+        GDM_OBJECT_MANAGER_OBJECT_PATH),
+      dex_ref (cancellable),
+      NULL),
+    &error);
+  if (!daemon_system->display_objects)
+    return dex_future_new_for_error (g_steal_pointer (&error));
+
+  foreach_remote_display (daemon_system, register_handover_for_display);
+
+  g_signal_connect_object (daemon_system->display_objects,
+                           "object-added",
+                           G_CALLBACK (on_gdm_object_added),
+                           daemon_system,
+                           G_CONNECT_SWAPPED);
+
+  g_signal_connect_object (daemon_system->display_objects,
+                           "object-removed",
+                           G_CALLBACK (on_gdm_object_removed),
+                           daemon_system,
+                           G_CONNECT_SWAPPED);
+
+  g_signal_connect (G_OBJECT (daemon_system->display_objects),
+                    "notify::name-owner",
+                    G_CALLBACK (on_gdm_display_objects_name_owner_changed),
+                    daemon_system);
+
+  return dex_future_new_true ();
+}
+
 static DexFuture *
 log_fiber_error (DexFuture *future,
                  gpointer   user_data)
@@ -1412,6 +1464,23 @@ grd_daemon_system_get_remote_display_factory (GrdDaemonSystem *daemon_system)
                                        NULL));
 }
 
+static void
+grd_daemon_system_get_gdm_object_manager (GrdDaemonSystem *daemon_system)
+{
+  DexFuture *future;
+
+  future = dex_scheduler_spawn (NULL, 0,
+                                grd_daemon_system_get_gdm_object_manager_fiber,
+                                daemon_system,
+                                NULL);
+
+  dex_future_disown (dex_future_catch (future,
+                                       log_fiber_error,
+                                       "[DaemonSystem] Failed getting gdm "
+                                       "object manager: ",
+                                       NULL));
+}
+
 GrdDaemonSystem *
 grd_daemon_system_new (GError **error)
 {
@@ -1440,8 +1509,6 @@ static void
 grd_daemon_system_startup (GApplication *app)
 {
   GrdDaemonSystem *daemon_system = GRD_DAEMON_SYSTEM (app);
-  GCancellable *cancellable =
-    grd_daemon_get_cancellable (GRD_DAEMON (daemon_system));
   g_autoptr (GError) error = NULL;
 
   daemon_system->dispatcher_skeleton =
@@ -1456,15 +1523,7 @@ grd_daemon_system_startup (GApplication *app)
 
   grd_daemon_system_own_name (daemon_system);
   grd_daemon_system_get_remote_display_factory (daemon_system);
-
-  grd_dbus_gdm_object_manager_client_new_for_bus (
-    G_BUS_TYPE_SYSTEM,
-    G_DBUS_OBJECT_MANAGER_CLIENT_FLAGS_DO_NOT_AUTO_START,
-    GDM_BUS_NAME,
-    GDM_OBJECT_MANAGER_OBJECT_PATH,
-    cancellable,
-    on_gdm_object_manager_client_acquired,
-    daemon_system);
+  grd_daemon_system_get_gdm_object_manager (daemon_system);
 
   g_signal_connect (daemon_system, "rdp-server-started",
                     G_CALLBACK (on_rdp_server_started), NULL);
